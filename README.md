@@ -105,6 +105,14 @@ The installer will:
 ./uninstall.sh --full
 ```
 
+### Restart MCP Server
+
+If you've updated `.env` configuration:
+
+```bash
+./install.sh --restart
+```
+
 ## Configuration
 
 ### Environment Variables
@@ -113,31 +121,63 @@ The installer will:
 |----------|-------------|---------|
 | `MOBSF_URL` | MobSF server URL | `http://host.docker.internal:9000` |
 | `MOBSF_API_KEY` | MobSF REST API key | Required |
+| `MCP_API_KEY` | Bearer token for MCP authentication | Optional (recommended) |
 | `PORT` | MCP server port | `7567` |
 
 ### Example `.env` file
 
 ```env
 MOBSF_URL=http://host.docker.internal:9000
-MOBSF_API_KEY=your-api-key-here
+MOBSF_API_KEY=your-mobsf-api-key-here
+MCP_API_KEY=your-mcp-auth-token-here
 ```
+
+## Authentication
+
+The MCP server supports optional Bearer token authentication. When `MCP_API_KEY` is configured, all requests to `/mcp` must include an `Authorization` header:
+
+```
+Authorization: Bearer <your-mcp-api-key>
+```
+
+**Generate a secure token:**
+```bash
+openssl rand -hex 32
+```
+
+The `install.sh` script will automatically offer to generate a secure token for you.
+
+> **Note:** The `/health` and `/` endpoints do not require authentication.
 
 ## MCP Client Configuration
 
 ### VS Code (GitHub Copilot)
 
-Add to your VS Code settings (`settings.json`):
+Create or edit `~/.vscode/mcp.json` (or use VS Code's MCP settings):
 
 ```json
 {
-  "mcp": {
-    "servers": {
-      "mobsf": {
-        "url": "http://localhost:7567/mcp"
+  "servers": {
+    "mobsf-mcp-server": {
+      "url": "http://127.0.0.1:7567/mcp"
+    }
+  }
+}
+```
+
+**With authentication (recommended):**
+```json
+{
+  "servers": {
+    "mobsf-mcp-server": {
+      "url": "http://127.0.0.1:7567/mcp",
+      "headers": {
+        "Authorization": "Bearer your-mcp-api-key-here"
       }
     }
   }
 }
+```
 ```
 
 ### Claude Desktop
@@ -167,19 +207,22 @@ const client = new MCPClient({
 
 ### `scanFile`
 
-Scan an APK or IPA file from a file path.
+Scan an APK or IPA file from a file path. **Supports automatic path translation** - you can use your host machine paths directly (e.g., `/Users/username/Downloads/app.apk`), and they will be automatically translated to container paths.
 
 **Parameters:**
-- `file` (string, required): Path to the APK/IPA file
+- `file` (string, required): Path to the APK/IPA file (host or container path)
 
 **Example:**
 ```json
 {
   "tool": "scanFile",
   "arguments": {
-    "file": "/path/to/app.apk"
+    "file": "/Users/username/Downloads/app.apk"
   }
 }
+```
+
+> **Note:** The Docker container mounts your home directory at `/host_home`, so files anywhere under your home folder are accessible.
 ```
 
 ### `scanFileBase64`
@@ -258,11 +301,26 @@ Delete a scan from MobSF.
 
 ## API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Server info and available tools |
-| `/mcp` | POST | MCP protocol endpoint (Streamable HTTP) |
-| `/health` | GET | Health check endpoint |
+| Endpoint | Method | Auth Required | Description |
+|----------|--------|---------------|-------------|
+| `/` | GET | No | Server info and available tools |
+| `/mcp` | POST | Yes* | MCP protocol endpoint (Streamable HTTP) |
+| `/mcp/` | POST | Yes* | MCP protocol endpoint (alias with trailing slash) |
+| `/health` | GET | No | Health check endpoint |
+
+*Auth required only if `MCP_API_KEY` is configured.
+
+## Security Features
+
+This server implements several security best practices:
+
+- 🔐 **Bearer Token Authentication** - Optional but recommended
+- ⏱️ **Request Timeouts** - All API calls have timeouts to prevent hanging
+- 🔒 **Timing-Safe Comparison** - API key validation uses `crypto.timingSafeEqual`
+- 📁 **Filename Sanitization** - Prevents path traversal attacks
+- 🚫 **Sensitive Data Masking** - Base64 content and file paths are masked in logs
+- 🛑 **Graceful Shutdown** - Proper cleanup of sessions on SIGTERM/SIGINT
+- 👤 **Non-root Docker User** - Container runs as unprivileged user
 
 ## Development
 
@@ -368,4 +426,9 @@ This project is a modernized version of the original [pullkitsan/mobsf-mcp-serve
 - 🔧 Added **install.sh** and **uninstall.sh** for easy setup
 - 📤 Added **base64 file upload** support for AI agents
 - 🛡️ Enhanced security with non-root Docker user
+- 🔐 **Optional Bearer token authentication** for MCP endpoints
+- 🔄 **Automatic path translation** - use host paths directly
+- ⏱️ **Request timeouts** on all API calls
+- 🛑 **Graceful shutdown** handling
+- 🔒 **Timing-safe token comparison** to prevent timing attacks
 

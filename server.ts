@@ -25,7 +25,7 @@ import os from "os";
 import FormData from "form-data";
 import { URLSearchParams } from "url";
 import { fileURLToPath } from "url";
-import { randomUUID } from "crypto";
+import { randomUUID, timingSafeEqual } from "crypto";
 
 // ESM compatibility
 const __filename = fileURLToPath(import.meta.url);
@@ -37,6 +37,7 @@ dotenv.config({ path: path.resolve(__dirname, ".env") });
 // Configuration
 const MOBSF_URL = process.env.MOBSF_URL || "http://localhost:8000";
 const MOBSF_API_KEY = process.env.MOBSF_API_KEY || "";
+const MCP_API_KEY = process.env.MCP_API_KEY || ""; // Optional: Bearer token for MCP authentication
 const PORT = parseInt(process.env.PORT || "7567", 10);
 const UPLOAD_DIR = process.env.UPLOAD_DIR || path.join(os.tmpdir(), "mobsf-uploads");
 const LOG_FILE = path.join(os.tmpdir(), "mcp-mobsf.log");
@@ -53,6 +54,12 @@ try {
 // Validate required configuration
 if (!MOBSF_API_KEY) {
   console.warn("⚠️  WARNING: MOBSF_API_KEY is not configured. API calls to MobSF will fail.");
+}
+
+if (!MCP_API_KEY) {
+  console.warn("⚠️  WARNING: MCP_API_KEY is not configured. MCP server is running WITHOUT authentication!");
+} else {
+  console.log("🔐 MCP authentication enabled (Bearer token required)");
 }
 
 /**
@@ -92,6 +99,60 @@ const DeleteScanSchema = z.object({
 });
 
 // ============================================================================
+// Path Translation for Docker
+// ============================================================================
+
+/**
+ * Translate host paths to container paths
+ * Docker mounts: $HOME -> /host_home, workspace -> /workspace
+ */
+function translatePath(inputPath: string): string {
+  // If path starts with container paths, it's already translated
+  if (inputPath.startsWith('/workspace') || inputPath.startsWith('/host_home') || inputPath.startsWith('/app/uploads')) {
+    return inputPath;
+  }
+
+  // Get HOST_HOME from environment (the host's $HOME path, e.g., /Users/username)
+  const hostHome = process.env.HOST_HOME;
+  
+  // Check if running in Docker
+  const isDocker = hostHome || fs.existsSync('/host_home');
+  
+  if (!isDocker) {
+    // Running locally, no translation needed
+    return inputPath;
+  }
+
+  // If HOST_HOME is set, use it for precise path translation
+  // HOST_HOME is the host's home directory (e.g., /Users/vinsen.k.alfragisa)
+  // It's mounted to /host_home in Docker
+  if (hostHome && inputPath.startsWith(hostHome)) {
+    // /Users/vinsen.k.alfragisa/work/... -> /host_home/work/...
+    const relativePath = inputPath.substring(hostHome.length);
+    const translatedPath = `/host_home${relativePath}`;
+    log(`Path translation: ${inputPath} -> ${translatedPath}`);
+    return translatedPath;
+  }
+
+  // Fallback: Try to match /Users/xxx/ or /home/xxx/ patterns
+  // Extract the home directory portion and translate
+  const homeMatch = inputPath.match(/^(\/Users\/[^\/]+|\/home\/[^\/]+)(\/.*)?$/);
+  if (homeMatch) {
+    const restOfPath = homeMatch[2] || '';
+    const translatedPath = `/host_home${restOfPath}`;
+    log(`Path translation (fallback): ${inputPath} -> ${translatedPath}`);
+    return translatedPath;
+  }
+
+  // Windows paths (if someone tries)
+  if (/^[A-Za-z]:/.test(inputPath)) {
+    log(`Warning: Windows paths not supported in Docker: ${inputPath}`);
+  }
+
+  return inputPath;
+}
+
+// ============================================================================
 // MobSF API Functions
 // ============================================================================
 
@@ -104,7 +165,10 @@ type ToolResult = {
  * Upload and scan a file from a local path
  */
 async function scanFilePath(filePath: string): Promise<ToolResult> {
-  const ext = path.extname(filePath).toLowerCase();
+  // Translate host path to container path
+  const containerPath = translatePath(filePath);
+  
+  const ext = path.extname(containerPath).toLowerCase();
   const scanType = ext === ".apk" ? "apk" : ext === ".ipa" ? "ios" : null;
 
   if (!scanType) {
@@ -114,16 +178,20 @@ async function scanFilePath(filePath: string): Promise<ToolResult> {
     };
   }
 
-  if (!fs.existsSync(filePath)) {
+  if (!fs.existsSync(containerPath)) {
+    // Provide helpful error message with path info
+    const errorMsg = containerPath !== filePath 
+      ? `File not found: ${filePath}\nTranslated container path: ${containerPath}\n\nMake sure the file exists and is accessible from the Docker container.`
+      : `File not found: ${filePath}`;
     return {
       isError: true,
-      content: [{ type: "text", text: `File not found: ${filePath}` }],
+      content: [{ type: "text", text: errorMsg }],
     };
   }
 
   try {
-    log(`Uploading file from path: ${filePath}`);
-    return await uploadAndScan(filePath, scanType);
+    log(`Uploading file from path: ${containerPath} (original: ${filePath})`);
+    return await uploadAndScan(containerPath, scanType);
   } catch (error: unknown) {
     return handleError(error, "scan file");
   }
@@ -146,7 +214,9 @@ async function scanFileBase64(filename: string, base64Content: string): Promise<
   try {
     // Decode base64 and save to temp file
     const buffer = Buffer.from(base64Content, "base64");
-    const tempPath = path.join(UPLOAD_DIR, `${randomUUID()}_${filename}`);
+    // Sanitize filename to prevent path traversal
+    const sanitizedFilename = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const tempPath = path.join(UPLOAD_DIR, `${randomUUID()}_${sanitizedFilename}`);
     fs.writeFileSync(tempPath, buffer);
     
     log(`Saved base64 file to: ${tempPath}`);
@@ -181,6 +251,7 @@ async function uploadAndScan(filePath: string, scanType: string): Promise<ToolRe
     },
     maxContentLength: Infinity,
     maxBodyLength: Infinity,
+    timeout: 300000, // 5 minutes timeout for large files
   });
 
   const { hash, file_name } = uploadRes.data;
@@ -197,6 +268,7 @@ async function uploadAndScan(filePath: string, scanType: string): Promise<ToolRe
       Authorization: MOBSF_API_KEY,
       "Content-Type": "application/x-www-form-urlencoded",
     },
+    timeout: 600000, // 10 minutes for scanning
   });
 
   // Get report
@@ -208,6 +280,7 @@ async function uploadAndScan(filePath: string, scanType: string): Promise<ToolRe
       Authorization: MOBSF_API_KEY,
       "Content-Type": "application/x-www-form-urlencoded",
     },
+    timeout: 60000, // 1 minute for report retrieval
   });
 
   const report = reportRes.data;
@@ -231,6 +304,7 @@ async function getReport(hash: string): Promise<ToolResult> {
         Authorization: MOBSF_API_KEY,
         "Content-Type": "application/x-www-form-urlencoded",
       },
+      timeout: 60000, // 1 minute timeout
     });
 
     const report = res.data;
@@ -259,6 +333,7 @@ async function listScans(page: number = 1, pageSize: number = 10): Promise<ToolR
         Authorization: MOBSF_API_KEY,
         "Content-Type": "application/x-www-form-urlencoded",
       },
+      timeout: 30000, // 30 seconds timeout
     });
 
     return {
@@ -282,6 +357,7 @@ async function deleteScan(hash: string): Promise<ToolResult> {
         Authorization: MOBSF_API_KEY,
         "Content-Type": "application/x-www-form-urlencoded",
       },
+      timeout: 30000, // 30 seconds timeout
     });
 
     return {
@@ -388,7 +464,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: [
       {
         name: "scanFile",
-        description: "Scan an APK or IPA file from a local file path. The file must exist on the server's filesystem.",
+        description: "Scan an APK or IPA file from a local file path. Supports host machine paths (e.g., /Users/username/file.apk or /home/username/file.apk) which are automatically translated to container paths. You can use absolute paths from your system directly.",
         inputSchema: zodToJsonSchema(ScanFilePathSchema) as Record<string, unknown>,
       },
       {
@@ -418,7 +494,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
 // Register tool call handler
 server.setRequestHandler(CallToolRequestSchema, async (req) => {
   const { name, arguments: args } = req.params;
-  log(`Tool call: ${name} with args: ${JSON.stringify(args)}`);
+  // Log tool call but mask sensitive data (base64 content, file paths)
+  const safeArgs: Record<string, unknown> = { ...(args as Record<string, unknown>) };
+  if (typeof safeArgs.content === 'string') {
+    safeArgs.content = `[BASE64_CONTENT:${safeArgs.content.length} chars]`;
+  }
+  if (typeof safeArgs.file === 'string') {
+    safeArgs.file = `[FILE_PATH:${path.basename(safeArgs.file)}]`;
+  }
+  log(`Tool call: ${name} with args: ${JSON.stringify(safeArgs)}`);
 
   switch (name) {
     case "scanFile": {
@@ -490,12 +574,66 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
 const transports: Map<string, StreamableHTTPServerTransport> = new Map();
 
+/**
+ * Authentication middleware - validates Bearer token
+ */
+function authenticateRequest(req: Request, res: Response, next: () => void): void {
+  // Skip auth if MCP_API_KEY is not configured
+  if (!MCP_API_KEY) {
+    next();
+    return;
+  }
+
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader) {
+    res.status(401).json({
+      jsonrpc: "2.0",
+      error: {
+        code: -32001,
+        message: "Unauthorized: Missing Authorization header",
+      },
+      id: null,
+    });
+    return;
+  }
+
+  // Support both "Bearer <token>" and just "<token>"
+  const token = authHeader.startsWith("Bearer ") 
+    ? authHeader.slice(7) 
+    : authHeader;
+
+  // Use timing-safe comparison to prevent timing attacks
+  const tokenBuffer = Buffer.from(token);
+  const keyBuffer = Buffer.from(MCP_API_KEY);
+  
+  if (tokenBuffer.length !== keyBuffer.length || !timingSafeEqual(tokenBuffer, keyBuffer)) {
+    log(`Authentication failed: invalid token`);
+    res.status(403).json({
+      jsonrpc: "2.0",
+      error: {
+        code: -32002,
+        message: "Forbidden: Invalid API key",
+      },
+      id: null,
+    });
+    return;
+  }
+
+  next();
+}
+
 async function run() {
   const app = express();
 
-  // MCP endpoint - handles Streamable HTTP protocol
-  app.all("/mcp", async (req: Request, res: Response) => {
+  // NOTE: Do NOT use express.json() or express.raw() globally
+  // The MCP StreamableHTTPServerTransport needs to read the raw request stream
+
+  // MCP endpoint handler - handles Streamable HTTP protocol
+  const mcpHandler = async (req: Request, res: Response) => {
     const sessionId = req.headers["mcp-session-id"] as string | undefined;
+    
+    log(`MCP request: ${req.method} sessionId=${sessionId || 'none'} accept=${req.headers.accept}`);
 
     // Reuse existing session
     if (sessionId && transports.has(sessionId)) {
@@ -504,7 +642,7 @@ async function run() {
       return;
     }
 
-    // Create new session for POST without session ID
+    // Create new session for POST without session ID (initialize request)
     if (req.method === "POST" && !sessionId) {
       const newSessionId = randomUUID();
       const transport = new StreamableHTTPServerTransport({
@@ -532,6 +670,19 @@ async function run() {
       return;
     }
 
+    // Handle GET requests for SSE - need session ID
+    if (req.method === "GET") {
+      res.status(400).json({
+        jsonrpc: "2.0",
+        error: {
+          code: -32000,
+          message: "Bad Request: GET requests require mcp-session-id header. Send POST with initialize request first.",
+        },
+        id: null,
+      });
+      return;
+    }
+
     // Invalid request
     res.status(400).json({
       jsonrpc: "2.0",
@@ -541,9 +692,13 @@ async function run() {
       },
       id: null,
     });
-  });
+  };
 
-  // Health check endpoint
+  // MCP endpoint - handles both /mcp and /mcp/ (with authentication)
+  app.all("/mcp", authenticateRequest, mcpHandler);
+  app.all("/mcp/", authenticateRequest, mcpHandler);
+
+  // Health check endpoint (no auth required)
   app.get("/health", (_req: Request, res: Response) => {
     const status = {
       status: "ok",
@@ -551,17 +706,19 @@ async function run() {
       version: "2.1.0",
       mobsf_url: MOBSF_URL,
       api_key_configured: !!MOBSF_API_KEY,
+      auth_enabled: !!MCP_API_KEY,
       uptime: process.uptime(),
     };
     res.json(status);
   });
 
-  // Server info endpoint
+  // Server info endpoint (no auth required)
   app.get("/", (_req: Request, res: Response) => {
     res.json({
       name: "MobSF MCP Server",
       version: "2.1.0",
       description: "Model Context Protocol server for MobSF mobile security scanning",
+      auth_required: !!MCP_API_KEY,
       endpoints: {
         mcp: "/mcp",
         health: "/health",
@@ -570,7 +727,7 @@ async function run() {
     });
   });
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const httpServer = app.listen(PORT, "0.0.0.0", () => {
     log(`MobSF MCP Server started on http://0.0.0.0:${PORT}`);
     console.log(`
 ╔══════════════════════════════════════════════════════════════╗
@@ -579,10 +736,42 @@ async function run() {
 ║  MCP Endpoint:    http://localhost:${PORT}/mcp                 ║
 ║  Health Check:    http://localhost:${PORT}/health              ║
 ║  MobSF URL:       ${MOBSF_URL.padEnd(40)}║
-║  API Key:         ${MOBSF_API_KEY ? "Configured ✓".padEnd(40) : "Not configured ✗".padEnd(40)}║
+║  MobSF API Key:   ${MOBSF_API_KEY ? "✅ Configured".padEnd(40) : "❌ Not configured".padEnd(40)}║
+║  Authentication:  ${MCP_API_KEY ? "🔐 Enabled (Bearer token)".padEnd(40) : "⚠️  Disabled".padEnd(40)}║
 ╚══════════════════════════════════════════════════════════════╝
 `);
   });
+
+  // Graceful shutdown handler
+  const shutdown = async (signal: string) => {
+    log(`Received ${signal}, shutting down gracefully...`);
+    
+    // Close all MCP sessions
+    for (const [sessionId, transport] of transports.entries()) {
+      log(`Closing session: ${sessionId}`);
+      try {
+        await transport.close();
+      } catch (err) {
+        log(`Error closing session ${sessionId}: ${err}`);
+      }
+    }
+    transports.clear();
+    
+    // Close HTTP server
+    httpServer.close(() => {
+      log('HTTP server closed');
+      process.exit(0);
+    });
+    
+    // Force exit after 10 seconds
+    setTimeout(() => {
+      log('Forcing exit after timeout');
+      process.exit(1);
+    }, 10000);
+  };
+
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 run().catch((err) => {

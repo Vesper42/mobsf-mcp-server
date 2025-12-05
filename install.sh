@@ -207,9 +207,21 @@ get_mobsf_api_key() {
 
 # Create .env file
 create_env_file() {
-    local api_key="$1"
+    local mobsf_api_key="$1"
+    local mcp_api_key=""
     
     log_info "Creating .env file..."
+    
+    # Ask user if they want to enable authentication
+    echo ""
+    read -p "Enable MCP authentication (Bearer token)? [Y/n]: " enable_auth
+    if [[ ! "$enable_auth" =~ ^[Nn]$ ]]; then
+        # Generate a secure random token
+        mcp_api_key=$(openssl rand -hex 32)
+        log_success "Generated MCP API key for authentication"
+    else
+        log_warning "MCP server will run WITHOUT authentication"
+    fi
     
     cat > "${SCRIPT_DIR}/.env" << EOF
 # MobSF MCP Server Configuration
@@ -217,13 +229,28 @@ create_env_file() {
 
 # MobSF Configuration
 MOBSF_URL=http://host.docker.internal:${MOBSF_PORT}
-MOBSF_API_KEY=${api_key}
+MOBSF_API_KEY=${mobsf_api_key}
+
+# MCP Server Authentication
+# Use this token in Authorization header: Bearer <token>
+MCP_API_KEY=${mcp_api_key}
 
 # MCP Server Configuration
 PORT=${MCP_PORT}
 EOF
 
     log_success ".env file created"
+    
+    # Show the MCP API key if generated
+    if [ -n "$mcp_api_key" ]; then
+        echo ""
+        echo -e "${YELLOW}╔══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${YELLOW}║  🔐 MCP API Key (save this for your MCP client config):      ║${NC}"
+        echo -e "${YELLOW}╠══════════════════════════════════════════════════════════════╣${NC}"
+        echo -e "${YELLOW}║${NC}  ${mcp_api_key}  ${YELLOW}║${NC}"
+        echo -e "${YELLOW}╚══════════════════════════════════════════════════════════════╝${NC}"
+        echo ""
+    fi
 }
 
 # Build and start MCP server
@@ -288,6 +315,43 @@ print_status() {
 
 # Main installation flow
 main() {
+    # Detect docker-compose command first
+    if command -v docker-compose &> /dev/null; then
+        DOCKER_COMPOSE="docker-compose"
+    elif docker compose version &> /dev/null 2>&1; then
+        DOCKER_COMPOSE="docker compose"
+    else
+        DOCKER_COMPOSE="docker-compose"
+    fi
+    
+    # Handle --restart flag
+    if [ "${1:-}" = "--restart" ]; then
+        print_banner
+        log_info "Restarting MobSF MCP Server..."
+        cd "$SCRIPT_DIR"
+        $DOCKER_COMPOSE down
+        $DOCKER_COMPOSE up -d
+        wait_for_mcp_server
+        log_success "MCP Server restarted with updated .env"
+        echo ""
+        echo "Current status:"
+        curl -s "http://localhost:${MCP_PORT}/health" 2>/dev/null | sed 's/,/\n  /g; s/{/{\n  /; s/}/\n}/'
+        echo ""
+        exit 0
+    fi
+    
+    # Handle --help flag
+    if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+        echo "Usage: $0 [OPTION]"
+        echo ""
+        echo "Options:"
+        echo "  (none)      Full installation of MobSF and MCP Server"
+        echo "  --restart   Restart MCP Server only (apply .env changes)"
+        echo "  --help      Show this help message"
+        echo ""
+        exit 0
+    fi
+    
     print_banner
     
     # Check if already fully installed
