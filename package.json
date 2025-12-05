@@ -1,22 +1,41 @@
 {
-  "name": "mobsfmcp",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "mobsf-mcp-server",
+  "version": "2.1.0",
+  "description": "MobSF MCP Server - Mobile Security Framework integration via Model Context Protocol",
+  "main": "dist/server.js",
+  "type": "module",
   "scripts": {
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "dev": "tsx watch server.ts",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": [],
+  "keywords": [
+    "mobsf",
+    "mcp",
+    "security",
+    "mobile",
+    "apk",
+    "ipa"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.11.0",
     "axios": "^1.8.4",
     "dotenv": "^16.4.7",
+    "express": "^4.21.0",
+    "form-data": "^4.0.0",
     "zod": "^3.24.2",
     "zod-to-json-schema": "^3.24.5"
   },
   "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.1",
     "tsx": "^4.19.3",
     "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

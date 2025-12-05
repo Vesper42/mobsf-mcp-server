@@ -1,0 +1,27 @@
+services:
+  mobsf-mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mobsf-mcp-server
+    ports:
+      - "7567:7567"
+    volumes:
+      # Mount workspace for file access
+      - .:/workspace:ro
+      # Mount uploads directory for file uploads from AI agents
+      - ./uploads:/app/uploads
+    environment:
+      - PORT=7567
+      - MOBSF_URL=${MOBSF_URL:-http://host.docker.internal:9000}
+      - MOBSF_API_KEY=${MOBSF_API_KEY}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:7567/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    # Use extra_hosts for host.docker.internal on Linux
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
