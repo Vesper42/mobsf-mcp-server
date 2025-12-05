@@ -51,7 +51,7 @@ A Model Context Protocol (MCP) server that provides integration with [Mobile Sec
 
 ```bash
 # Clone the repository
-git clone https://github.com/pullkitsan/mobsf-mcp-server.git
+git clone https://github.com/Vesper42/mobsf-mcp-server.git
 cd mobsf-mcp-server
 
 # Run the installer (installs MobSF + MCP Server)
