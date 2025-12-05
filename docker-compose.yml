@@ -5,27 +5,29 @@ services:
       dockerfile: Dockerfile
     container_name: mobsf-mcp-server
     ports:
-      - "7567:7567"
+      - "${MCP_PORT:-7567}:${MCP_PORT:-7567}"
     volumes:
       # Mount user's home directory for scanning files from anywhere
-      - ${HOME}:/host_home:ro
+      # :z suffix for SELinux compatibility (safe to use on non-SELinux systems)
+      - ${HOME}:/host_home:ro,z
       # Mount current workspace (also accessible via /host_home path)
-      - .:/workspace:ro
+      - .:/workspace:ro,z
       # Mount uploads directory for file uploads from AI agents
-      - ./uploads:/app/uploads
+      - ./uploads:/app/uploads:z
     environment:
-      - PORT=7567
+      - PORT=${MCP_PORT:-7567}
       - MOBSF_URL=${MOBSF_URL:-http://host.docker.internal:9000}
       - MOBSF_API_KEY=${MOBSF_API_KEY}
       - MCP_API_KEY=${MCP_API_KEY:-}
       - HOST_HOME=${HOME}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:7567/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:${MCP_PORT:-7567}/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 5s
-    # Use extra_hosts for host.docker.internal on Linux
+    # For Docker on Linux: maps host.docker.internal to host gateway
+    # For Podman: harmless, Podman uses host.containers.internal natively
     extra_hosts:
       - "host.docker.internal:host-gateway"

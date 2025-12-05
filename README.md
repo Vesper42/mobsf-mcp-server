@@ -54,25 +54,36 @@ A Model Context Protocol (MCP) server that provides integration with [Mobile Sec
 git clone https://github.com/Vesper42/mobsf-mcp-server.git
 cd mobsf-mcp-server
 
-# Run the installer (installs MobSF + MCP Server)
-./install.sh
+# Run the installer with Docker
+./mobsf.sh --install --docker
+
+# Or with Podman (RHEL/Fedora compatible with SELinux)
+./mobsf.sh --install --podman
 ```
 
 The installer will:
 1. ✅ Check if services are already running (skips if healthy)
-2. ✅ Check prerequisites (Docker, docker-compose)
+2. ✅ Check prerequisites (Docker/Podman, compose tool)
 3. ✅ Pull and start MobSF on port 9000
 4. ✅ Extract the API key automatically
 5. ✅ Create the `.env` configuration file
-6. ✅ Build and start the MCP server on port 7567
+6. ✅ Create SELinux-compatible compose override (for Podman)
+7. ✅ Build and start the MCP server on port 7567
 
 ### Manual Installation
 
 1. **Start MobSF** (if not already running):
    ```bash
+   # Docker
    docker run -d --name mobsf \
      -p 9000:8000 \
      -v mobsf_data:/home/mobsf/.MobSF \
+     opensecurity/mobile-security-framework-mobsf:latest
+   
+   # Podman (with SELinux)
+   podman run -d --name mobsf \
+     -p 9000:8000 \
+     -v mobsf_data:/home/mobsf/.MobSF:Z \
      opensecurity/mobile-security-framework-mobsf:latest
    ```
 
@@ -96,13 +107,16 @@ The installer will:
 
 ```bash
 # Interactive mode
-./uninstall.sh
+./mobsf.sh --uninstall --docker
 
 # Remove MCP server only (keep MobSF)
-./uninstall.sh --mcp-only
+./mobsf.sh --uninstall --docker --mcp-only
 
 # Full cleanup (remove everything)
-./uninstall.sh --full
+./mobsf.sh --uninstall --docker --full
+
+# With Podman
+./mobsf.sh --uninstall --podman --full
 ```
 
 ### Restart MCP Server
@@ -110,7 +124,17 @@ The installer will:
 If you've updated `.env` configuration:
 
 ```bash
-./install.sh --restart
+./mobsf.sh --restart --docker
+# or
+./mobsf.sh --restart --podman
+```
+
+### Check Status
+
+```bash
+./mobsf.sh --status --docker
+# or
+./mobsf.sh --status --podman
 ```
 
 ## Configuration
